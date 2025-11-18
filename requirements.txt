@@ -24,3 +24,32 @@ pydantic-core>=2.0.0
 # Optional but recommended for better output
 colorama>=0.4.6
 python-dotenv>=1.0.0
+
+# Video processing
+moviepy>=1.0.3
+
+# Audio to text (Whisper)
+openai-whisper>=20231117
+
+# Ollama for translation
+ollama>=0.1.0
+
+# PyTorch for Whisper GPU acceleration
+# IMPORTANT: The packages below will install CPU-only PyTorch by default.
+# For GPU (CUDA) support, you MUST install PyTorch separately:
+#
+#   1. First uninstall CPU-only version:
+#      pip uninstall torch torchvision torchaudio
+#
+#   2. Then install CUDA-enabled version (check your CUDA version with: nvidia-smi):
+#      # For CUDA 12.1:
+#      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#      # For CUDA 11.8:
+#      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+#
+#   3. Verify installation: python check_cuda.py
+#
+# For CPU-only systems, the packages below will work fine.
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
