@@ -1,10 +1,11 @@
 """
-LangChain Calculator Agent using OpenRouter API
-This script creates an agent that can perform mathematical calculations.
+LangChain Multi-Tool Agent
+This script creates an agent that can perform various tasks including calculations,
+video/audio processing, transcription, and translation.
 
 Prerequisites:
 - pip install -r requirements.txt
-- OPENROUTER_API_KEY environment variable set
+- Either OPENROUTER_API_KEY/OPENAI_API_KEY (for OpenRouter) or Ollama running (for local models)
 """
 
 # Load environment variables from .env file
@@ -23,19 +24,64 @@ from simurgh_tools.text_file_saver import save_text_to_file
 from simurgh_tools.cuda_checker import check_cuda_status
 from simurgh_tools.translator import translate_text
 
-# Initialize ChatOpenAI with OpenRouter
-# Ensure OPENROUTER_API_KEY environment variable is set
-api_key = os.environ.get("OPENROUTER_API_KEY")
-if not api_key:
-    api_key = os.environ.get("OPENAI_API_KEY")  # Fallback to OPENAI_API_KEY if needed
+# Initialize LLM - support both Ollama and OpenRouter with failover
+ollama_enabled_for_core = os.environ.get("OLLAMA_ENABLED_FOR_CORE", "false").lower() == "true"
+openrouter_enabled_for_core = os.environ.get("OPENROUTER_ENABLED_FOR_CORE", "true").lower() == "true"
+llm_initialized = False
 
-core_model_name = os.environ.get("CORE_MODEL_NAME")
-llm = ChatOpenAI(
-    model=core_model_name,  # Using Gemma 2 27B Instruct model from OpenRouter
-    base_url="https://openrouter.ai/api/v1",
-    api_key=api_key,
-    temperature=0
-)
+# Try Ollama first if enabled
+if ollama_enabled_for_core:
+    try:
+        from langchain_ollama import ChatOllama
+        core_model_name = os.environ.get("CORE_MODEL_NAME_OLLAMA", "gemma3:12b")
+        llm = ChatOllama(
+            model=core_model_name,
+            temperature=0
+        )
+        print(f"Using Ollama model: {core_model_name}")
+        llm_initialized = True
+    except ImportError:
+        print("Error: langchain-ollama not installed. Install with: pip install langchain-ollama")
+        if openrouter_enabled_for_core:
+            print("Falling back to OpenRouter...")
+        else:
+            raise ValueError("Ollama is enabled but not installed, and OpenRouter is disabled.")
+    except Exception as e:
+        print(f"Error initializing Ollama: {str(e)}")
+        print("Make sure Ollama is running.")
+        if openrouter_enabled_for_core:
+            print("Falling back to OpenRouter...")
+        else:
+            raise ValueError(f"Ollama failed to initialize and OpenRouter is disabled: {str(e)}")
+
+# Use OpenRouter if Ollama is not enabled, failed, or as fallback
+if not llm_initialized and openrouter_enabled_for_core:
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        api_key = os.environ.get("OPENAI_API_KEY")  # Fallback to OPENAI_API_KEY if needed
+    
+    if not api_key:
+        raise ValueError(
+            "Error: Either OPENROUTER_API_KEY or OPENAI_API_KEY environment variable must be set. "
+            "Or set OLLAMA_ENABLED_FOR_CORE=true to use local Ollama models."
+        )
+    
+    core_model_name = os.environ.get("CORE_MODEL_NAME_OPENROUTER", "google/gemma-2-27b-it")
+    llm = ChatOpenAI(
+        model=core_model_name,
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+        temperature=0
+    )
+    print(f"Using OpenRouter model: {core_model_name}")
+    llm_initialized = True
+
+# Ensure LLM is initialized
+if not llm_initialized:
+    raise ValueError(
+        "Error: No LLM initialized. Enable either OLLAMA_ENABLED_FOR_CORE=true or "
+        "OPENROUTER_ENABLED_FOR_CORE=true (default) and provide necessary API keys."
+    )
 
 
 # Create a calculator tool
@@ -241,13 +287,7 @@ agent_executor = AgentExecutor(
 
 # Test the calculator agent
 def main():
-    print("=== LangChain Calculator Agent with OpenRouter API ===\n")
-    
-    # Check if API key is set
-    if not os.environ.get("OPENROUTER_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
-        print("Error: Either OPENROUTER_API_KEY or OPENAI_API_KEY environment variable must be set.")
-        print("Please set your OpenRouter API key before running this script.")
-        return
+    print("=== LangChain Multi-Tool Agent ===\n")
 
     test_questions = [
         "What is 25 + 37?",

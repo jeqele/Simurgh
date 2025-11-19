@@ -7,15 +7,36 @@ Controlled by TRANSLATION_SERVICE environment variable ('ollama' or 'openrouter'
 
 import os
 from pathlib import Path
+from datetime import datetime
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Default service and models
-DEFAULT_TRANSLATION_SERVICE = os.environ.get("TRANSLATION_SERVICE", "ollama")  # 'ollama' or 'openrouter'
-DEFAULT_OLLAMA_MODEL = "gemma3:12b"
-DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini"
+# Helper functions to check if services are enabled
+def _is_ollama_enabled() -> bool:
+    """Check if Ollama is enabled based on .env configuration."""
+    ollama_enabled = os.environ.get("OLLAMA_ENABLED_FOR_TRANSLATION", "").lower()
+    return ollama_enabled == "true"
+
+def _is_openrouter_enabled() -> bool:
+    """Check if OpenRouter is enabled based on .env configuration."""
+    openRouter_enabled = os.environ.get("OPENROUTER_ENABLED_FOR_TRANSLATION", "").lower()
+    return openRouter_enabled == "true"
+
+def _get_ollama_model() -> str:
+    """Get Ollama model from .env, raise error if not set."""
+    model = os.environ.get("TRANSLATE_MODEL_NAME_OLLAMA") or os.environ.get("OLLAMA_MODEL")
+    if not model:
+        raise ValueError("OLLAMA_MODEL or TRANSLATE_MODEL_NAME_OLLAMA must be set in .env file")
+    return model
+
+def _get_openrouter_model() -> str:
+    """Get OpenRouter model from .env, raise error if not set."""
+    model = os.environ.get("TRANSLATE_MODEL_NAME_OPENROUTER") or os.environ.get("OPENROUTER_MODEL")
+    if not model:
+        raise ValueError("OPENROUTER_MODEL or TRANSLATE_MODEL_NAME_OPENROUTER must be set in .env file")
+    return model
 
 
 def _read_file_content(file_path: str) -> str:
@@ -180,6 +201,88 @@ def _translate_with_openrouter(text: str, target_language: str, model: str) -> s
         return f"Error during OpenRouter translation: {str(e)}"
 
 
+def _extract_translated_text(translation_result: str) -> str:
+    """
+    Extract the actual translated text from the translation result string.
+    
+    Args:
+        translation_result (str): The full translation result (may include "Translated to {language}:" prefix).
+    
+    Returns:
+        str: The extracted translated text, or the original string if it's an error.
+    """
+    if translation_result.startswith("Error:"):
+        return translation_result
+    
+    # Remove "Translated to {language}:" prefix if present
+    if ":" in translation_result:
+        parts = translation_result.split(":", 1)
+        if len(parts) == 2 and "Translated to" in parts[0]:
+            return parts[1].strip()
+    
+    return translation_result
+
+
+def _translate_single_sentence(sentence: str, target_language: str, model: str = None) -> str:
+    """
+    Translate a single sentence using the appropriate service with fallback logic.
+    
+    Logic:
+    - If Ollama is enabled: try Ollama first, if it fails and OpenRouter is enabled, try OpenRouter
+    - If only OpenRouter is enabled: use OpenRouter
+    
+    Args:
+        sentence (str): The sentence to translate.
+        target_language (str): The target language.
+        model (str, optional): The model to use. If None, uses model from .env based on service.
+    
+    Returns:
+        str: The translated sentence, or error message.
+    """
+    ollama_enabled = _is_ollama_enabled()
+    openrouter_enabled = _is_openrouter_enabled()
+    
+    # Determine which model to use
+    if model is None:
+        if ollama_enabled:
+            try:
+                model = _get_ollama_model()
+            except ValueError as e:
+                if openrouter_enabled:
+                    # Fallback to OpenRouter if Ollama model not configured
+                    model = _get_openrouter_model()
+                    ollama_enabled = False
+                else:
+                    return f"Error: {str(e)}"
+        elif openrouter_enabled:
+            model = _get_openrouter_model()
+        else:
+            return "Error: Neither Ollama nor OpenRouter is enabled. Please configure at least one service in .env"
+    
+    # Try Ollama first if enabled
+    if ollama_enabled:
+        result = _translate_with_ollama(sentence, target_language, model)
+        # If Ollama fails, try OpenRouter as fallback if available
+        if result.startswith("Error:"):
+            if openrouter_enabled:
+                # Get OpenRouter model for fallback
+                try:
+                    openrouter_model = _get_openrouter_model()
+                    result = _translate_with_openrouter(sentence, target_language, openrouter_model)
+                except ValueError:
+                    # If OpenRouter model not configured, return Ollama error
+                    pass
+        return result
+    
+    # If only OpenRouter is enabled, use it
+    elif openrouter_enabled:
+        result = _translate_with_openrouter(sentence, target_language, model)
+        return result
+    
+    # Neither service is enabled
+    return "Error: Neither Ollama nor OpenRouter is enabled. Please configure at least one service in .env"
+
+
 def translate_text(text_or_file: str, target_language: str, model: str = None) -> str:
     """
     Translates the given text or file content into the target language using either Ollama or OpenRouter.
@@ -187,6 +290,9 @@ def translate_text(text_or_file: str, target_language: str, model: str = None) -
     
     If the input is a file path, the file content will be read and translated.
     If the input is text, it will be translated directly.
+    
+    The text is split by "." into sentences, and each sentence is translated individually.
+    Each translated sentence is printed at runtime, and the final result is saved to a file.
 
     Args:
         text_or_file (str): The text to be translated or path to a file containing text.
@@ -210,44 +316,93 @@ def translate_text(text_or_file: str, target_language: str, model: str = None) -
         
         text = file_content
     
-    # Determine which service to use (read dynamically each time)
-    translation_service = os.environ.get("TRANSLATION_SERVICE", "ollama").lower()
+    # Determine which service to use and get model from .env
+    ollama_enabled = _is_ollama_enabled()
+    openrouter_enabled = _is_openrouter_enabled()
     
-    # Set default model if not specified
+    # Set model from .env if not specified
     if model is None:
-        if translation_service == "ollama":
-            model = os.environ.get("TRANSLATE_MODEL_NAME", DEFAULT_OLLAMA_MODEL)
-        else:  # openrouter
-            model = os.environ.get("TRANSLATE_MODEL_NAME", DEFAULT_OPENROUTER_MODEL)
+        if ollama_enabled:
+            try:
+                model = _get_ollama_model()
+                print(f"Using Ollama model: {model}")
+            except ValueError as e:
+                if openrouter_enabled:
+                    model = _get_openrouter_model()
+                    print(f"Ollama model not configured, using OpenRouter model: {model}")
+                    ollama_enabled = False
+                else:
+                    return f"Error: {str(e)}"
+        elif openrouter_enabled:
+            model = _get_openrouter_model()
+            print(f"Using OpenRouter model: {model}")
+        else:
+            return "Error: Neither Ollama nor OpenRouter is enabled. Please configure at least one service in .env"
     
-    # Validate model name matches service (basic check)
-    if translation_service == "ollama":
-        # Ollama models typically don't have slashes (except for some like llama3:8b)
-        # OpenRouter models have format like "openai/gpt-4o-mini" or "google/gemini-2.0-flash-exp:free"
-        if "/" in model and ("openai" in model.lower() or "google" in model.lower() or "anthropic" in model.lower() or "meta" in model.lower()):
-            # This looks like an OpenRouter model being used with Ollama
-            return f"Error: Model '{model}' appears to be an OpenRouter model, but TRANSLATION_SERVICE is set to 'ollama'. For Ollama, use models like 'gemma3:12b', 'llama3', 'mistral', etc. You can either:\n1. Set TRANSLATE_MODEL_NAME to a valid Ollama model (e.g., 'gemma3:12b')\n2. Switch to OpenRouter by setting TRANSLATION_SERVICE=openrouter"
+    # Split text by "." to get sentences
+    sentences = [s.strip() for s in text.split(".") if s.strip()]
     
-    # Route to appropriate translation service
-    if translation_service == "ollama":
-        result = _translate_with_ollama(text, target_language, model)
-        # If Ollama fails with connection error, try OpenRouter as fallback if available
-        if result.startswith("Error:") and ("connection" in result.lower() or "502" in result or "not available" in result.lower()):
-            # Check if OpenRouter is configured
-            if os.getenv("OPENROUTER_API_KEY"):
-                result = f"{result}\n\nAttempting fallback to OpenRouter...\n"
-                openrouter_result = _translate_with_openrouter(text, target_language, os.environ.get("TRANSLATE_MODEL_NAME", DEFAULT_OPENROUTER_MODEL))
-                result += openrouter_result
-            else:
-                result += "\n\nTip: To use OpenRouter as fallback, set OPENROUTER_API_KEY in your environment."
-    elif translation_service == "openrouter":
-        result = _translate_with_openrouter(text, target_language, model)
-    else:
-        return f"Error: Invalid TRANSLATION_SERVICE value '{translation_service}'. Must be 'ollama' or 'openrouter'."
+    if not sentences:
+        return "Error: No sentences found in the text to translate."
     
-    # If we translated from a file, add file info to the result
+    # Translate each sentence individually
+    translated_sentences = []
+    print(f"\nTranslating {len(sentences)} sentence(s)...\n")
+    
+    for i, sentence in enumerate(sentences, 1):
+        print(f"[{i}/{len(sentences)}] Translating: {sentence[:50]}{'...' if len(sentence) > 50 else ''}")
+        
+        # Translate the sentence (fallback logic handled inside)
+        translation_result = _translate_single_sentence(sentence, target_language, model)
+        
+        # Check for errors
+        if translation_result.startswith("Error:"):
+            print(f"Error translating sentence {i}: {translation_result}")
+            translated_sentences.append(sentence)  # Keep original on error
+        else:
+            # Extract the actual translated text
+            translated_text = _extract_translated_text(translation_result)
+            translated_sentences.append(translated_text)
+            print(f"Translated: {translated_text}\n")
+    
+    # Join all translated sentences with "."
+    final_translation = ". ".join(translated_sentences)
+    
+    # Add period at the end if the original text ended with one
+    if text.rstrip().endswith("."):
+        final_translation += "."
+    
+    # Save to file
     if file_path:
-        result = f"Translated from file: {file_path}\n\n{result}"
+        # Generate output filename based on input file
+        input_path = Path(file_path)
+        output_filename = f"{input_path.stem}_translated_{target_language.lower().replace(' ', '_')}{input_path.suffix}"
+        output_path = input_path.parent / output_filename
+    else:
+        # Generate output filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"translated_{target_language.lower().replace(' ', '_')}_{timestamp}.txt"
+        output_path = Path(output_filename)
     
-    return result
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(final_translation)
+        
+        abs_path = os.path.abspath(output_path)
+        print(f"\nTranslation saved to: {abs_path}\n")
+        
+        result = f"Translated to {target_language}:\n\n{final_translation}\n\nSaved to: {abs_path}"
+        
+        if file_path:
+            result = f"Translated from file: {file_path}\n\n{result}"
+        
+        return result
+    except Exception as e:
+        error_msg = f"Error saving translation to file: {str(e)}"
+        print(f"\n{error_msg}\n")
+        result = f"Translated to {target_language}:\n\n{final_translation}\n\n{error_msg}"
+        if file_path:
+            result = f"Translated from file: {file_path}\n\n{result}"
+        return result
 

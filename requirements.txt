@@ -14,6 +14,9 @@ openai>=1.10.0
 # LangChain OpenAI integration
 langchain-openai>=0.1.0
 
+# LangChain Ollama integration
+langchain-ollama>=0.1.0
+
 # HTTP client
 requests>=2.31.0
 
